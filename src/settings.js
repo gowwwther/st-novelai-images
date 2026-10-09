@@ -881,6 +881,7 @@ let lastRequestSnapshot = null;
 
 export function setLastRequestSnapshot(snapshot) {
     lastRequestSnapshot = snapshot || null;
+    if (typeof window !== 'undefined' && typeof CustomEvent === 'function') window.dispatchEvent(new CustomEvent('nni-request-updated'));
 }
 
 export function getLastRequestSnapshot() {

@@ -137,9 +137,9 @@ export function buildNovelAIParameters(settings, prompt, negativePrompt, model) 
             legacy_uc: false,
         },
     };
-    // V5 has a fixed noise schedule and does not support CFG delay.
+    // V5's web client fixes Karras; the UI does not offer a schedule picker.
     if (model.startsWith('nai-diffusion-5-')) {
-        delete parameters.noise_schedule;
+        parameters.noise_schedule = 'karras';
         delete parameters.skip_cfg_above_sigma;
     }
     if (medium) delete parameters.cfg_rescale;

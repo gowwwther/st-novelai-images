@@ -32,7 +32,7 @@ const provider = {
         const snapshot = { timestamp: Date.now(), status: 'preparing', prompt: request.positive, negativePrompt: request.negative,
             characters: request.slots.map(s => ({ name: s.name, description: s.description, negative: s.negative, center: s.center, reason: s.reason })),
             references: [], skippedReferences: request.skippedReferences, warnings: request.warnings,
-            metadata: { provider: 'NovelAI', apiType: 'novelai', model: settings.model, style: request.style?.name || '', size: `${request.body.parameters.width}x${request.body.parameters.height}`, seed: request.body.parameters.seed },
+            metadata: { provider: 'NovelAI', apiType: 'novelai', model: settings.model, style: request.style?.name || '', styleId: request.style?.id || '', stylePrompt: request.style?.value || '', styleSelection: request.style?.selectionSource || 'none', size: `${request.body.parameters.width}x${request.body.parameters.height}`, seed: request.body.parameters.seed },
             url: `${endpoint}/ai/generate-image`, body: request.body };
         setLastRequestSnapshot(snapshot);
         for (const warning of request.warnings) { nniLog('WARN', warning); globalThis.toastr?.warning(warning, 'NovelAI'); }

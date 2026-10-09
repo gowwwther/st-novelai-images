@@ -1,5 +1,5 @@
-import { getSettings, saveSettings, createConnectionProfile, loadConnectionProfile, saveCurrentIntoProfile, renameConnectionProfile, removeConnectionProfile, getLastRequestSnapshot, exportLogs, ensureStyles } from './settings.js';
-import { NOVELAI_MODELS, NOVELAI_NUMERIC_FIELDS, NOVELAI_RESOLUTION_PRESETS, NOVELAI_ASPECT_RATIOS, NOVELAI_SAMPLERS, NOVELAI_NOISE_SCHEDULES, isNovelAIMedium } from './novelai.js';
+import { getSettings, getActiveStyle, saveSettings, createConnectionProfile, loadConnectionProfile, saveCurrentIntoProfile, renameConnectionProfile, removeConnectionProfile, getLastRequestSnapshot, exportLogs, ensureStyles } from './settings.js';
+import { NOVELAI_MODELS, NOVELAI_NUMERIC_FIELDS, NOVELAI_RESOLUTION_PRESETS, NOVELAI_ASPECT_RATIOS, NOVELAI_SAMPLERS, NOVELAI_NOISE_SCHEDULES, isNovelAIMedium, getNovelAIResolution, resolveNovelAISettings } from './novelai.js';
 import { makeCharacter, makeStyle, id, catalogInstructions, buildNativeRequest } from './catalog.js';
 import { sanitizeForHtml as esc, readFileAsDataUrl, saveImageToFile, imageUrlToDataUrl } from './utils.js';
 import { triggerBrowserDownload } from './references.js';
@@ -16,15 +16,37 @@ export function syncInstructions() {
     const ctx = SillyTavern.getContext(), s = getSettings();
     ctx.setExtensionPrompt?.('novelai_inline_images', s.enabled && s.injectImageInstructions ? catalogInstructions(s) : '', 1, 0, false, 0);
 }
+function requestSummaryHtml(snapshot) {
+    const body = snapshot.body, p = body?.parameters;
+    if (!body || !p) return '<p>Запрос не отправлен; смотри причину ниже.</p>';
+    const metadata = snapshot.metadata || {}, style = metadata.style || '(нет активного стиля)';
+    return `<div class="nni-request-summary"><h4>Модель в теле запроса: ${esc(NOVELAI_MODELS[body.model] || body.model)}</h4>
+        <p><code>model: ${esc(body.model)}</code> · ${esc(snapshot.status || '')} · ${esc(new Date(snapshot.timestamp || Date.now()).toLocaleString())}</p>
+        <p>${p.width}×${p.height} · Steps ${p.steps} · Guidance ${p.scale} · ${esc(NOVELAI_SAMPLERS[p.sampler] || p.sampler)} · Seed ${p.seed} · Noise ${esc(p.noise_schedule || 'default')}</p>
+        <p><b>Стиль запроса:</b> ${esc(style)} · ${esc(metadata.styleSelection || '')}</p>
+        <p class="nni-subtitle">Это модель, указанная в HTTP-запросе. Поля v4_prompt и v4_negative_prompt используются также V5; их название не переключает модель.</p></div>`;
+}
+function requestStatus() {
+    if (!root) return;
+    const s = getSettings(), style = getActiveStyle(s), effective = resolveNovelAISettings(s);
+    let size = ''; try { const { width, height } = getNovelAIResolution(s); size = `${width}×${height}`; } catch {}
+    const current = root.querySelector('#nni_current_config');
+    if (current) current.innerHTML = `<b>Выбрано: ${esc(NOVELAI_MODELS[s.model] || s.model)}</b> · <code>${esc(s.model)}</code><p>${size} · Steps ${effective.novelaiSteps} · Guidance ${effective.novelaiCfgScale} · ${esc(NOVELAI_SAMPLERS[effective.novelaiSampler] || effective.novelaiSampler)}</p><p>Активный стиль: <b>${esc(style?.name || 'не выбран')}</b>${style?.value ? '' : ' · теги стиля не добавлены'}</p>`;
+    const snapshot = getLastRequestSnapshot();
+    for (const el of root.querySelectorAll('[data-last-request-summary]')) {
+        el.innerHTML = snapshot ? requestSummaryHtml(snapshot) + button('last-request', 'Открыть точный запрос') : '<p>Последнего запроса пока нет. Он появится после генерации в этой вкладке.</p>';
+    }
+}
 export async function showLastRequest(snapshot = getLastRequestSnapshot()) {
     if (!snapshot) { toastr.info('Пока нет запроса. Нажми «Проверить сборку» или сгенерируй картинку.'); return; }
     const smallBody = JSON.parse(JSON.stringify(snapshot.body || {}, (key, val) => {
         if ((key === 'director_reference_images' || key === 'reference_image_multiple') && Array.isArray(val)) return val.map((s, i) => `[base64 #${i + 1}: ${s.length} chars — полный JSON доступен для скачивания]`);
         return val;
     }));
-    const html = `<div class="nni-debug"><p><b>${esc(snapshot.status || 'preview')}</b> · ${esc(snapshot.url || '')}</p>
+    const html = `<div class="nni-debug">${requestSummaryHtml(snapshot)}<p>${esc(snapshot.url || '')}</p>
         ${snapshot.error ? `<p class="nni-notice">${esc(snapshot.error)}</p>` : ''}
         ${(snapshot.warnings || []).map(w => `<p class="nni-notice">${esc(w)}</p>`).join('')}
+        <h4>Теги выбранного стиля</h4><pre>${esc(snapshot.metadata?.stylePrompt || '(нет)')}</pre>
         <h4>Общий промпт</h4><pre>${esc(snapshot.body?.input || snapshot.prompt || '')}</pre>
         <h4>Персонажи: отдельные positive / negative</h4>${(snapshot.characters || []).map((c, i) => `<section><b>${i + 1}. ${esc(c.name)} · ${esc(c.reason || '')}</b><pre>${esc(c.description)}</pre><pre>Negative: ${esc(c.negative || '(пусто)')}</pre></section>`).join('')}
         <h4>Общий негатив</h4><pre>${esc(snapshot.body?.parameters?.negative_prompt || snapshot.negativePrompt || '')}</pre>
@@ -40,6 +62,7 @@ function connectionHtml() {
         ${field('apiKey', 'Persistent API Token', 'password', 'autocomplete="off"')}
         <p class="nni-subtitle">Endpoint: https://image.novelai.net</p>
         ${select('model', 'Модель', NOVELAI_MODELS)}
+        <div id="nni_current_config" class="nni-notice"></div><details><summary>Последний запрос · модель и стиль</summary><div data-last-request-summary></div></details>
         <div class="nni-grid">${select('novelaiResolution', 'Размер', Object.fromEntries(Object.entries(NOVELAI_RESOLUTION_PRESETS).map(([k, v]) => [k, v.label])))}${select('novelaiAspectRatio', 'Пропорции', Object.fromEntries(NOVELAI_ASPECT_RATIOS.map(v => [v, v])))}
         ${NOVELAI_NUMERIC_FIELDS.map(f => field(f.key, f.label, 'number', `min="${f.min}" max="${f.max}" step="${f.step}"`)).join('')}
         ${select('novelaiSampler', 'Sampler', NOVELAI_SAMPLERS)}${select('novelaiNoiseSchedule', 'Noise schedule · V4.5', Object.fromEntries(NOVELAI_NOISE_SCHEDULES.map(v => [v, v])))}</div>
@@ -51,7 +74,10 @@ function connectionHtml() {
 }
 function modelHint() {
     const s = getSettings(), el = root.querySelector('#nni_model_hint');
-    if (el) el.textContent = isNovelAIMedium(s.model) ? 'Medium: 14 шагов, Euler Ancestral и фиксированный негатив. Свои негативы требуют Full/Curated.' : s.model.startsWith('nai-diffusion-5-') ? 'V5: отдельные текстовые слоты и негативы. Фото пока не поддерживаются. Noise schedule и Skip CFG не отправляются.' : 'V4.5: Character / Style Reference и Vibe Transfer доступны.';
+    const v5 = s.model.startsWith('nai-diffusion-5-');
+    if (el) el.textContent = isNovelAIMedium(s.model) ? 'Medium: 14 шагов, Euler Ancestral и фиксированный негатив. Свои негативы требуют Full/Curated.' : v5 ? 'V5 Full/Curated: High effort. Отдельные текстовые слоты и негативы. Фото пока не поддерживаются. Noise schedule закреплён на Karras; Skip CFG не отправляется.' : 'V4.5: Character / Style Reference и Vibe Transfer доступны.';
+    for (const key of ['novelaiNoiseSchedule', 'novelaiSkipCfgAboveSigma']) { const input = root.querySelector(`[data-setting="${key}"]`); if (input) input.disabled = v5; }
+    requestStatus();
 }
 function collection() { const s = getSettings(); return libraryKind === 'characters' ? s.novelCharacters : libraryKind === 'styles' ? s.styles : s.negativePrompts; }
 function selected() { return libraryKind === 'characters' ? selectedCharacter : selectedStyle; }
@@ -89,6 +115,7 @@ function preview() {
     const s = getSettings(); const instruction = JSON.parse(root.querySelector('#nni_test').value);
     const request = buildNativeRequest(s, { ...instruction, aspectRatio: instruction.aspect_ratio });
     const snapshot = { timestamp: Date.now(), status: 'preview · запрос не отправлялся', url: 'https://image.novelai.net/ai/generate-image', body: request.body,
+        metadata: { style: request.style?.name || '', stylePrompt: request.style?.value || '', styleSelection: request.style?.selectionSource || 'none' },
         characters: request.slots, warnings: [...request.warnings, ...request.activeReferences.map(r => `Фото «${r.label}» планируется (${r.referenceMode}); Base64 появится в последнем реальном запросе.`)], skippedReferences: request.skippedReferences, references: [] };
     return showLastRequest(snapshot);
 }
@@ -101,7 +128,7 @@ export function createSettingsUI() {
     root.innerHTML = `<div class="inline-drawer"><div class="inline-drawer-toggle inline-drawer-header"><b>NovelAI Images — Till</b><div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div></div><div class="inline-drawer-content">
         ${check('enabled', 'Генерация включена')}<div class="nni-tabs"><button class="menu_button active" type="button" data-tab="connection">Генерация</button><button class="menu_button" type="button" data-tab="library">Библиотека</button><button class="menu_button" type="button" data-tab="debug">Отладка / перенос</button></div>
         <section data-panel="connection" class="nni-form">${connectionHtml()}</section><section data-panel="library" id="nni_library" hidden></section>
-        <section data-panel="debug" hidden><div class="nni-toolbar">${button('last-request', 'Последний запрос')}${button('download-request', 'Скачать полный JSON')}${button('logs', 'Скачать логи')}${button('instructions', 'Инструкция для ИИ')}</div>
+        <section data-panel="debug" hidden><div data-last-request-summary class="nni-notice"></div><div class="nni-toolbar">${button('last-request', 'Последний запрос')}${button('download-request', 'Скачать полный JSON')}${button('logs', 'Скачать логи')}${button('instructions', 'Инструкция для ИИ')}</div>
         <label>Проверка сборки / ручная генерация<textarea id="nni_test" class="text_pole" rows="6">${esc(JSON.stringify({ prompt: '1boy, portrait, soft daylight', characters: [], aspect_ratio: '1:1' }, null, 2))}</textarea></label>
         <div class="nni-toolbar">${button('preview', 'Проверить сборку · бесплатно')}${button('generate', 'Сгенерировать')}</div><p id="nni_test_status" role="status"></p><img id="nni_test_result" class="nni-test-result" hidden>
         <details><summary>Импорт / экспорт</summary><p class="nni-subtitle">Экспорт содержит библиотеки и фото, без API-ключей. Импорт добавляет записи, не стирая существующие.</p><div class="nni-toolbar">${button('export', 'Экспорт библиотеки')}<label class="menu_button">Импорт JSON<input id="nni_import" type="file" accept="application/json,.json" hidden></label>${button('import-silly', 'Перенести из SillyImages')}</div></details>
@@ -118,7 +145,7 @@ async function handleAction(action, target) {
     case 'deactivate': s[libraryKind === 'styles' ? 'activeStyleId' : 'activeNegativePromptId'] = ''; renderLibraryList(); break;
     case 'photo-remove': if (c) { c.imagePath = ''; c.referenceEnabled = false; renderEditor(); } break;
     case 'last-request': await showLastRequest(); break;
-    case 'download-request': { const snapshot = getLastRequestSnapshot(); if (!snapshot?.body) throw new Error('Нет записанного тела запроса.'); triggerBrowserDownload('novelai-last-request.json', JSON.stringify({ url: snapshot.url, body: snapshot.body, characters: snapshot.characters, warnings: snapshot.warnings, status: snapshot.status }, null, 2)); break; }
+    case 'download-request': { const snapshot = getLastRequestSnapshot(); if (!snapshot?.body) throw new Error('Нет записанного тела запроса.'); triggerBrowserDownload('novelai-last-request.json', JSON.stringify({ timestamp: snapshot.timestamp, metadata: snapshot.metadata, url: snapshot.url, body: snapshot.body, characters: snapshot.characters, warnings: snapshot.warnings, status: snapshot.status }, null, 2)); break; }
     case 'logs': exportLogs(); break;
     case 'instructions': await Popup.show.text('Инструкция · {{nni-catalog}}', `<pre class="nni-instruction-text">${esc(catalogInstructions(s))}</pre>`, { wide: true, allowVerticalScrolling: true }); break;
     case 'preview': await preview(); break;
@@ -130,7 +157,7 @@ async function handleAction(action, target) {
     case 'profile-rename': { const name = await Popup.show.input('Переименовать профиль', 'Имя'); if (name) renameConnectionProfile(s.activeConnectionProfileId, name); refreshConnection(); break; }
     case 'profile-remove': if (await Popup.show.confirm('Удалить профиль?', 'Библиотеки сохранятся.')) { removeConnectionProfile(s.activeConnectionProfileId); refreshConnection(); } break;
     }
-    saveSettings(); syncInstructions();
+    saveSettings(); syncInstructions(); requestStatus();
 }
 function refreshConnection() { root.querySelector('[data-panel="connection"]').innerHTML = connectionHtml(); modelHint(); }
 function importLibrary(payload) {
@@ -148,6 +175,7 @@ function importLibrary(payload) {
     renderLibraryList(); saveSettings(); syncInstructions(); toastr.success('Библиотеки добавлены');
 }
 function bind() {
+    window.addEventListener('nni-request-updated', requestStatus);
     root.addEventListener('click', async e => {
         const tab = e.target.closest('[data-tab]');
         if (tab) { root.querySelectorAll('[data-panel]').forEach(p => p.hidden = p.dataset.panel !== tab.dataset.tab); root.querySelectorAll('[data-tab]').forEach(b => b.classList.toggle('active', b === tab)); return; }
@@ -162,7 +190,7 @@ function bind() {
         const value = e.target.type === 'checkbox' ? e.target.checked : e.target.type === 'number' ? Number(e.target.value) : e.target.value;
         if (key) { getSettings()[key] = value; if (key === 'model') modelHint(); applyImageActionsStyle(); }
         if (entryKey) { const c = collection().find(c => c.id === selected()); if (c) c[entryKey] = value; renderLibraryList(); }
-        saveSettings(); syncInstructions();
+        saveSettings(); syncInstructions(); modelHint();
     });
     root.addEventListener('change', async e => {
         try {

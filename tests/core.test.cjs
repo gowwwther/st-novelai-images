@@ -42,3 +42,16 @@ test('positioning applies identical centers to both native captions',async()=>{c
 test('library is unlimited, request enforces model character cap',async()=>{const {catalog,s}=await seeded();s.novelCharacters=Array.from({length:300},(_,i)=>({...catalog.makeCharacter(`c${i}`),description:'boy'}));const r=catalog.buildNativeRequest(s,{prompt:'group',characters:s.novelCharacters.slice(0,22).map(c=>c.name)});assert.equal(r.slots.length,22);assert.throws(()=>catalog.buildNativeRequest(s,{prompt:'group',characters:s.novelCharacters.slice(0,23).map(c=>c.name)}),/up to 22/);});
 test('parser persists selection/negative/style through legacy upgrade and regen',async()=>{const {parser}=await seeded();const text='[IMG:GEN:'+JSON.stringify({prompt:'garden',characters:[{name:'Ren',prompt:'smiling'}],negative_prompt:'fog',style_id:'s1',aspect_ratio:'2:3'})+']';const [tag]=await parser.parseImageTags(text);assert.equal(tag.characters[0].name,'Ren');assert.equal(tag.negativePrompt,'fog');const saved=parser.buildPersistedImageTag(tag,'/user/images/test.png');const [again]=await parser.parseImageTags(saved,{forceAll:true});assert.equal(again.characters[0].name,'Ren');assert.equal(again.styleId,'s1');assert.equal(again.negativePrompt,'fog');});
 test('custom fields survive style normalization / settings reload',async()=>{const {settings,s}=await seeded();Object.assign(s.styles[0],{imagePath:'/image.png',referenceEnabled:true,fidelity:.6});settings.ensureStyles(s);assert.equal(s.styles[0].negative,'flat shading');assert.equal(s.styles[0].imagePath,'/image.png');assert.equal(settings.getSettings().styles[0].fidelity,.6);});
+test('unrecognized tag style cannot replace active library style or lose its negative',async()=>{
+ const {catalog,s}=await seeded();const r=catalog.buildNativeRequest(s,{prompt:'portrait',style:'cinematic anime',characters:['Ren']});
+ assert.equal(r.body.input,'painterly, portrait');assert.equal(r.body.parameters.negative_prompt,'watermark, flat shading');assert.equal(r.style.id,s.activeStyleId);assert.equal(r.style.selectionSource,'active-fallback');assert.ok(r.warnings.some(w=>w.includes('активный стиль')));
+ assert.throws(()=>catalog.buildNativeRequest(s,{prompt:'portrait',style_id:'missing'}),/не найден/);
+});
+test('legacy raw style matching a library value retains the linked negative',async()=>{
+ const {catalog,s}=await seeded();const r=catalog.buildNativeRequest(s,{prompt:'portrait',style:'painterly',characters:['Ren']});assert.equal(r.style.id,s.activeStyleId);assert.equal(r.body.parameters.negative_prompt,'watermark, flat shading');
+});
+test('all selectable model IDs remain exact, V5 uses fixed Karras, JSON aliases match request settings',async()=>{
+ const {catalog,s}=await seeded();for(const model of ['nai-diffusion-5-full','nai-diffusion-5-curated','nai-diffusion-4-5-full','nai-diffusion-4-5-curated']){
+ s.model=model;s.novelaiNoiseSchedule='exponential';const r=catalog.buildNativeRequest(s,{prompt:'portrait',characters:['Ren'],aspect_ratio:'2:3',negative_prompt:'fog'});assert.equal(r.body.model,model);assert.equal(r.body.parameters.width,832);assert.equal(r.body.parameters.height,1216);assert.equal(r.body.parameters.noise_schedule,model.startsWith('nai-diffusion-5-')?'karras':'exponential');assert.equal(r.body.parameters.negative_prompt,'watermark, flat shading, fog');
+ }
+});

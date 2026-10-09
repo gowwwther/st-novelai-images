@@ -85,14 +85,19 @@ export function resolveCharacters(instruction, settings = getSettings()) {
 export function resolveStyle(instruction, settings = getSettings()) {
     const selector = instruction.styleId || instruction.style_id || instruction.style;
     if (selector) {
-        const style = (settings.styles || []).find(s => s.id === selector || s.name?.toLowerCase() === String(selector).toLowerCase());
-        if (style) return style;
+        const key = String(selector).trim().toLowerCase();
+        const style = (settings.styles || []).find(s => s.id === selector || s.name?.trim().toLowerCase() === key || s.value?.trim().toLowerCase() === key);
+        if (style) return { ...style, selectionSource: 'tag-library' };
         if (instruction.styleId || instruction.style_id) throw new Error(`Стиль «${selector}» не найден.`);
-        return { name: 'Inline style', value: selector, negative: '' };
+        const active = getActiveStyle(settings);
+        if (active) return { ...active, selectionSource: 'active-fallback', selectionWarning: `Поле style в теге не совпало со стилем библиотеки. Используется активный стиль «${active.name}», включая его негатив и фото.` };
+        return { name: 'Inline style', value: selector, negative: '', selectionSource: 'inline' };
     }
-    return getActiveStyle(settings);
+    const active = getActiveStyle(settings);
+    return active ? { ...active, selectionSource: 'active' } : null;
 }
 export function buildNativeRequest(settings, instruction = {}) {
+    instruction = { ...instruction, negativePrompt: instruction.negativePrompt ?? instruction.negative_prompt, aspectRatio: instruction.aspectRatio ?? instruction.aspect_ratio };
     const { base, slots } = resolveCharacters(instruction, settings);
     const style = resolveStyle(instruction, settings);
     const additional = buildAdditionalReferencesPromptBlock(instruction.matchedAdditionalRefs || []);
@@ -116,7 +121,8 @@ export function buildNativeRequest(settings, instruction = {}) {
         if (slot.entry?.referenceEnabled && slot.entry?.imagePath) referencePlans.push({ ...slot.entry, label: slot.name, kind: 'character', slotIndex: slots.indexOf(slot) });
     }
     if (style?.referenceEnabled && style?.imagePath) referencePlans.push({ ...style, label: style.name, kind: 'style' });
-    const warnings = [];
+    const warnings = style?.selectionWarning ? [style.selectionWarning] : [];
+    if (!style?.value) warnings.push('Теги стиля не добавлены: активируй заполненный стиль в Библиотеке → Стили или укажи его имя в теге.');
     const activeReferences = [];
     const skippedReferences = [];
     for (const plan of referencePlans) {
