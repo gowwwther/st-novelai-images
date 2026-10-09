@@ -1,0 +1,12 @@
+{
+  "display_name": "NovelAI Images — Till",
+  "loading_order": 100,
+  "requires": [],
+  "optional": [],
+  "js": "index.js",
+  "css": "style.css",
+  "author": "gowwwther; based on 0xl0cal & astera SillyImages",
+  "version": "1.0.0",
+  "homePage": "https://github.com/gowwwther/st-novelai-images",
+  "auto_update": true
+}
