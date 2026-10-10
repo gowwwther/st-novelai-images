@@ -93,7 +93,8 @@ export function buildPNGRequest(settings, raw) {
         positive:positive.caption.base_caption,negative:negative.caption.base_caption,
         style:{name:'Общий промпт из PNG',value:'',selectionSource:'png'},
         presets:{qualityPreset:'из PNG · уже в тексте',ucPreset:'из PNG · уже в тексте'},
-        warnings:['Повтор PNG: стиль и библиотечные описания не добавляются. Весь текст, seed и параметры берутся из PNG.',
+        warnings:[],
+        notices:['Повтор PNG: стиль и библиотечные описания не добавляются. Весь текст, seed и параметры берутся из PNG.',
             `PNG сообщает семейство ${source}; вариант Full/Curated/Medium определяется выбранной моделью ${model}.`],
         activeReferences:[],skippedReferences:[] };
 }

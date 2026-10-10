@@ -50,6 +50,7 @@ export async function showLastRequest(snapshot = getLastRequestSnapshot()) {
     const html = `<div class="nni-debug">${requestSummaryHtml(snapshot)}<p>${esc(snapshot.url || '')}</p>
         ${snapshot.error ? `<p class="nni-notice">${esc(snapshot.error)}</p>` : ''}
         ${(snapshot.warnings || []).map(w => `<p class="nni-notice">${esc(w)}</p>`).join('')}
+        ${(snapshot.notices || []).map(n => `<p class="nni-subtitle">${esc(n)}</p>`).join('')}
         <h4>Теги выбранного стиля</h4><pre>${esc(snapshot.metadata?.stylePrompt || '(нет)')}</pre>
         <h4>Теги, добавленные пресетами</h4><pre>Quality: ${esc(snapshot.metadata?.qualityTags || '(нет)')}\nUC: ${esc(snapshot.metadata?.undesiredTags || '(нет)')}</pre>
         <h4>Общий промпт</h4><pre>${esc(snapshot.body?.input || snapshot.prompt || '')}</pre>
@@ -155,7 +156,7 @@ async function handleAction(action, target) {
     case 'deactivate': s[libraryKind === 'styles' ? 'activeStyleId' : 'activeNegativePromptId'] = ''; renderLibraryList(); break;
     case 'photo-remove': if (c) { c.imagePath = ''; c.referenceEnabled = false; renderEditor(); } break;
     case 'last-request': await showLastRequest(); break;
-    case 'download-request': { const snapshot = getLastRequestSnapshot(); if (!snapshot?.body) throw new Error('Нет записанного тела запроса.'); triggerBrowserDownload('novelai-last-request.json', JSON.stringify({ timestamp: snapshot.timestamp, metadata: snapshot.metadata, url: snapshot.url, body: snapshot.body, characters: snapshot.characters, warnings: snapshot.warnings, status: snapshot.status }, null, 2)); break; }
+    case 'download-request': { const snapshot = getLastRequestSnapshot(); if (!snapshot?.body) throw new Error('Нет записанного тела запроса.'); triggerBrowserDownload('novelai-last-request.json', JSON.stringify({ timestamp: snapshot.timestamp, metadata: snapshot.metadata, url: snapshot.url, body: snapshot.body, characters: snapshot.characters, warnings: snapshot.warnings, notices: snapshot.notices, status: snapshot.status, error: snapshot.error, httpStatus: snapshot.httpStatus }, null, 2)); break; }
     case 'logs': exportLogs(); break;
     case 'instructions': await Popup.show.text('Инструкция · {{nni-catalog}}', `<pre class="nni-instruction-text">${esc(catalogInstructions(s))}</pre>`, { wide: true, allowVerticalScrolling: true }); break;
     case 'preview': await preview(); break;
@@ -163,15 +164,17 @@ async function handleAction(action, target) {
         if (!importedPNG) throw new Error('Сначала прочитай оригинальный PNG.');
         const request=buildPNGRequest(s,importedPNG);
         await showLastRequest({timestamp:Date.now(),status:'PNG preview · запрос не отправлялся',url:'https://image.novelai.net/ai/generate-image',
-            body:request.body,metadata:{...request.presets,style:request.style.name,styleSelection:'png'},characters:request.slots,warnings:request.warnings}); break;
+            body:request.body,metadata:{...request.presets,style:request.style.name,styleSelection:'png'},characters:request.slots,warnings:request.warnings,notices:request.notices}); break;
     }
     case 'png-generate': {
         if (!importedPNG) throw new Error('Сначала прочитай оригинальный PNG.');
+        const status=root.querySelector('#nni_png_status');status.textContent='Отправляю повтор PNG в NovelAI…';
         target.disabled=true;try {
             const data=await resolveActiveProvider().generate({prompt:'',options:{importedPNG}});const path=await saveImageToFile(data);
             const img=root.querySelector('#nni_test_result');img.src=path;img.hidden=false;img.setAttribute('data-nni-lightbox','true');
-            root.querySelector('#nni_png_status').textContent='Повтор PNG готов · фактический запрос доступен в отладке';
-        } finally {target.disabled=false;} break;
+            status.textContent='Повтор PNG готов · фактический запрос доступен в отладке';
+        } catch(err) {status.textContent=`Ошибка повтора PNG: ${err.message}`;throw err;}
+        finally {target.disabled=false;} break;
     }
     case 'generate': { target.disabled = true; try { const instruction = JSON.parse(root.querySelector('#nni_test').value); const data = await generateImageWithRetry(instruction.prompt, instruction.style || '', msg => root.querySelector('#nni_test_status').textContent = msg, { characters: instruction.characters, styleId: instruction.style_id, aspectRatio: instruction.aspect_ratio, negativePrompt: instruction.negative_prompt }); const path = await saveImageToFile(data); const img = root.querySelector('#nni_test_result'); img.src = path; img.hidden = false; img.setAttribute('data-nni-lightbox', 'true'); root.querySelector('#nni_test_status').textContent = 'Готово · сохранено в папке изображений Таверны'; } finally { target.disabled = false; } break; }
     case 'export': { const payload = { kind: 'nni-library', version: 1, characters: structuredClone(s.novelCharacters), styles: structuredClone(s.styles), negatives: structuredClone(s.negativePrompts), activeStyleId: s.activeStyleId, globalNegative: s.globalNegative }; for (const entry of [...payload.characters, ...payload.styles]) if (entry.imagePath && !entry.imagePath.startsWith('data:')) { const image = await imageUrlToDataUrl(entry.imagePath); if (!image) throw new Error(`Не удалось включить фото ${entry.name} в экспорт.`); entry.imagePath = image; } triggerBrowserDownload('novelai-library.json', JSON.stringify(payload, null, 2)); break; }

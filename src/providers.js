@@ -35,10 +35,11 @@ const provider = {
         }
         const snapshot = { timestamp: Date.now(), status: 'preparing', prompt: request.positive, negativePrompt: request.negative,
             characters: request.slots.map(s => ({ name: s.name, description: s.description, negative: s.negative, center: s.center, reason: s.reason })),
-            references: [], skippedReferences: request.skippedReferences, warnings: request.warnings,
+            references: [], skippedReferences: request.skippedReferences, warnings: request.warnings, notices: request.notices || [],
             metadata: { provider: 'NovelAI', apiType: 'novelai', model: settings.model, ...request.presets, style: request.style?.name || '', styleId: request.style?.id || '', stylePrompt: request.style?.value || '', styleSelection: request.style?.selectionSource || 'none', size: `${request.body.parameters.width}x${request.body.parameters.height}`, seed: request.body.parameters.seed },
             url: `${endpoint}/ai/generate-image`, body: request.body };
         setLastRequestSnapshot(snapshot);
+        for (const notice of snapshot.notices) nniLog('INFO', notice);
         for (const warning of request.warnings) { nniLog('WARN', warning); globalThis.toastr?.warning(warning, 'NovelAI'); }
         try {
             snapshot.references = await attachNativeReferences(request, settings, options.signal);
@@ -49,6 +50,7 @@ const provider = {
                 headers: { Authorization: `Bearer ${settings.apiKey}`, 'Content-Type': 'application/json', Accept: 'application/json' },
                 body: JSON.stringify(snapshot.body),
             }, settings.requestTimeoutMs || 600000, options.signal);
+            snapshot.httpStatus = response.status;
             if (!response.ok) {
                 const raw = (await response.text()).split(settings.apiKey).join('[TOKEN REDACTED]').slice(0, 800);
                 throw new ProviderError({ message: `NovelAI ${response.status}: ${raw}`, status: response.status, code: String(response.status), retryable: [429, 502, 503, 504].includes(response.status), providerId: 'novelai' });
