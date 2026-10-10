@@ -16,7 +16,8 @@ async function app() {
   return m;
  }
  const catalog = module(path.join(root, 'src/catalog.js')); await catalog.link((specifier, ref) => module(path.resolve(path.dirname(ref.identifier), specifier))); await catalog.evaluate();
- return { catalog: catalog.namespace, settings: modules.get(path.join(root, 'src/settings.js')).namespace, parser: modules.get(path.join(root, 'src/parser.js')).namespace, ctx };
+ const png=module(path.join(root,'src/pngMetadata.js'));await png.link((specifier,ref)=>module(path.resolve(path.dirname(ref.identifier),specifier)));await png.evaluate();
+ return { catalog: catalog.namespace, png:png.namespace, settings: modules.get(path.join(root, 'src/settings.js')).namespace, parser: modules.get(path.join(root, 'src/parser.js')).namespace, ctx };
 }
 async function seeded() {
  const a = await app(), s = a.settings.getSettings();
@@ -54,4 +55,44 @@ test('all selectable model IDs remain exact, V5 uses fixed Karras, JSON aliases 
  const {catalog,s}=await seeded();for(const model of ['nai-diffusion-5-full','nai-diffusion-5-curated','nai-diffusion-4-5-full','nai-diffusion-4-5-curated']){
  s.model=model;s.novelaiNoiseSchedule='exponential';const r=catalog.buildNativeRequest(s,{prompt:'portrait',characters:['Ren'],aspect_ratio:'2:3',negative_prompt:'fog'});assert.equal(r.body.model,model);assert.equal(r.body.parameters.width,832);assert.equal(r.body.parameters.height,1216);assert.equal(r.body.parameters.noise_schedule,model.startsWith('nai-diffusion-5-')?'karras':'exponential');assert.equal(r.body.parameters.negative_prompt,'watermark, flat shading, fog');
  }
+});
+test('web UC and quality presets expand in native base captions without changing character slots',async()=>{
+ const {catalog,s}=await seeded();Object.assign(s,{novelaiUcPreset:'heavy',novelaiNegativeNsfw:true,novelaiQualityPreset:'standard',novelaiSeed:424242});
+ const r=catalog.buildNativeRequest(s,{prompt:'2boys, garden',characters:['Ren','Gojo']});const p=r.body.parameters;
+ const heavy='lowres, artistic error, film grain, scan artifacts, worst quality, bad quality, jpeg artifacts, very displeasing, chromatic aberration, dithering, halftone, screentone, multiple views, logo, too many watermarks, negative space, blank page';
+ assert.equal(r.body.model,'nai-diffusion-5-full');assert.equal(p.seed,424242);
+ assert.equal(r.body.input,'painterly, 2boys, garden, very aesthetic, masterpiece, no text');assert.equal(p.v4_prompt.caption.base_caption,r.body.input);
+ assert.equal(p.negative_prompt,`nsfw, ${heavy}, watermark, flat shading`);assert.equal(p.v4_negative_prompt.caption.base_caption,p.negative_prompt);
+ assert.equal(p.v4_prompt.caption.char_captions[0].char_caption,'boy, slim, blonde hair');assert.equal(p.v4_negative_prompt.caption.char_captions[0].char_caption,'muscles');
+ assert.equal(p.v4_prompt.legacy_uc,false);assert.equal(p.v4_negative_prompt.use_order,false);assert.equal(p.v4_negative_prompt.use_coords,false);
+ assert.equal(p.qualityToggle,false);assert.equal(p.ucPreset,3);assert.equal(r.presets.ucPreset,'heavy');assert.equal(r.presets.undesiredTags,`nsfw, ${heavy}`);
+ const again=catalog.buildNativeRequest(s,{prompt:'2boys, garden',characters:['Ren','Gojo']});assert.deepEqual(JSON.parse(JSON.stringify(again.body)),JSON.parse(JSON.stringify(r.body)));
+});
+test('presets follow model, preserve Text blocks and keep coordinates aligned',async()=>{
+ const {catalog,s}=await seeded();Object.assign(s,{novelaiQualityPreset:'light',novelaiUcPreset:'light'});
+ let r=catalog.buildNativeRequest(s,{prompt:'portrait\n\nText: HELLO',characters:[{name:'Ren',center:{x:.2,y:.4}}]});
+ assert.equal(r.body.input,'painterly, portrait, very aesthetic, amazing quality, no text\n\nText: HELLO');assert.ok(r.warnings.some(w=>w.includes('no text')));
+ assert.ok(r.body.parameters.negative_prompt.startsWith('lowres, bad hands, bad anatomy, artistic error, sepia, white haze'));
+ assert.equal(r.body.parameters.v4_negative_prompt.use_coords,true);
+ s.model='nai-diffusion-4-5-curated';s.novelaiUcPreset='human';r=catalog.buildNativeRequest(s,{prompt:'portrait',characters:[]});
+ assert.ok(r.body.input.endsWith('location, masterpiece, no text, -0.8::feet::, rating:general'));assert.ok(r.body.parameters.negative_prompt.startsWith('blurry, lowres, upscaled, artistic error, film grain, scan artifacts, bad anatomy, bad hands'));
+ s.novelaiUcPreset='invalid';assert.throws(()=>catalog.buildNativeRequest(s,{prompt:'portrait',characters:[]}),/Unknown NovelAI UC preset/);
+});
+test('new preset settings survive connection profile save/load without modifying libraries',async()=>{
+ const {settings,s}=await seeded();Object.assign(s,{novelaiQualityPreset:'standard',novelaiUcPreset:'heavy',novelaiNegativeNsfw:true});
+ const p=settings.createConnectionProfile('Website settings',s);Object.assign(s,{novelaiQualityPreset:'none',novelaiUcPreset:'none',novelaiNegativeNsfw:false});
+ settings.loadConnectionProfile(p.id,s);assert.equal(s.novelaiQualityPreset,'standard');assert.equal(s.novelaiUcPreset,'heavy');assert.equal(s.novelaiNegativeNsfw,true);assert.equal(s.styles[0].value,'painterly');
+});
+test('PNG repeat preserves native inputs and seed despite different active library and presets',async()=>{
+ const {catalog,png,s}=await seeded();s.novelaiSeed=424242;const source=catalog.buildNativeRequest(s,{prompt:'2boys, park',characters:[{name:'Ren',center:{x:.3,y:.5}},'Gojo']}).body;
+ const metadata={...JSON.parse(JSON.stringify(source.parameters)),model_name:'NovelAI Diffusion V5',request_type:'PromptGenerateRequest',signed_hash:'private-not-forwarded',stream:'msgpack',extra_passthrough_testing:{prompt:'not-forwarded'}};
+ delete metadata.negative_prompt;metadata.uc=source.parameters.negative_prompt;
+ Object.assign(s,{novelaiSeed:999,novelaiQualityPreset:'standard',novelaiUcPreset:'human',globalNegative:'unrelated'});s.styles[0].value='unrelated style';s.novelCharacters[0].description='unrelated appearance';
+ const r=png.buildPNGRequest(s,{Comment:JSON.stringify(metadata)});
+ assert.equal(r.body.input,source.input);assert.equal(r.body.parameters.seed,424242);assert.equal(r.body.parameters.negative_prompt,source.parameters.negative_prompt);
+ assert.deepEqual(JSON.parse(JSON.stringify(r.body.parameters.v4_prompt)),JSON.parse(JSON.stringify(source.parameters.v4_prompt)));assert.deepEqual(JSON.parse(JSON.stringify(r.body.parameters.v4_negative_prompt)),JSON.parse(JSON.stringify(source.parameters.v4_negative_prompt)));
+ assert.equal(r.body.parameters.signed_hash,undefined);assert.equal(r.body.parameters.extra_passthrough_testing,undefined);assert.equal(r.body.parameters.stream,undefined);
+ assert.throws(()=>png.buildPNGRequest(s,{...metadata,director_reference_strengths:[.8]}),/фото-референсы/);
+ s.model='nai-diffusion-4-5-full';assert.throws(()=>png.buildPNGRequest(s,metadata),/семейством/);
+ s.model='nai-diffusion-5-full-medium';assert.throws(()=>png.buildPNGRequest(s,metadata),/Medium/);
 });

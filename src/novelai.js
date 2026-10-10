@@ -12,6 +12,44 @@ export const NOVELAI_MODELS = Object.freeze({
 export const NOVELAI_MEDIUM_MODEL = 'nai-diffusion-5-full-medium';
 export const NOVELAI_MEDIUM_NEGATIVE = 'lowres, artistic error, film grain, scan artifacts, worst quality, bad quality, jpeg artifacts, very displeasing, chromatic aberration, dithering, halftone, screentone, multiple views, logo, too many watermarks, negative space, blank page';
 
+// Expand web presets locally so debug/export shows every tag actually sent.
+// Sources: docs.novelai.net/en/image/{qualitytags,undesiredcontent}/.
+export const NOVELAI_QUALITY_PRESETS = Object.freeze({ none: 'None · без добавления тегов', light: 'Light', standard: 'Standard' });
+export const NOVELAI_UC_PRESETS = Object.freeze({ none: 'None · только свои негативы', heavy: 'Heavy', light: 'Light', human: 'Human Focus' });
+const curatedHeavy = 'blurry, lowres, upscaled, artistic error, film grain, scan artifacts, worst quality, bad quality, jpeg artifacts, very displeasing, chromatic aberration, halftone, multiple views, logo, too many watermarks, negative space, blank page';
+export function novelAIUndesiredTags(settings) {
+    if (isNovelAIMedium(settings.model)) return NOVELAI_MEDIUM_NEGATIVE;
+    const preset = settings.novelaiUcPreset || 'none';
+    const curated45 = settings.model === 'nai-diffusion-4-5-curated';
+    const heavy = curated45 ? curatedHeavy : NOVELAI_MEDIUM_NEGATIVE;
+    let tags = '';
+    if (preset === 'heavy') tags = heavy;
+    if (preset === 'light') tags = settings.model?.startsWith('nai-diffusion-5-')
+        ? 'lowres, bad hands, bad anatomy, artistic error, sepia, white haze, worst quality, very displeasing, jpeg artifacts, 0::ai-generated::'
+        : curated45 ? 'blurry, lowres, upscaled, artistic error, scan artifacts, jpeg artifacts, logo, too many watermarks, negative space, blank page'
+            : 'lowres, artistic error, scan artifacts, worst quality, bad quality, jpeg artifacts, multiple views, very displeasing, too many watermarks, negative space, blank page';
+    if (preset === 'human') tags = curated45
+        ? 'blurry, lowres, upscaled, artistic error, film grain, scan artifacts, bad anatomy, bad hands, worst quality, bad quality, jpeg artifacts, very displeasing, chromatic aberration, halftone, multiple views, logo, too many watermarks, @_@, mismatched pupils, glowing eyes, negative space, blank page'
+        : `${heavy}, @_@, mismatched pupils, glowing eyes, bad anatomy`;
+    return [settings.novelaiNegativeNsfw ? 'nsfw' : '', tags].filter(Boolean).join(', ');
+}
+export function novelAIQualityTags(settings) {
+    const preset = settings.novelaiQualityPreset || 'none';
+    if (preset === 'none') return '';
+    if (settings.model?.startsWith('nai-diffusion-5-')) return preset === 'light'
+        ? 'very aesthetic, amazing quality, no text' : 'very aesthetic, masterpiece, no text';
+    return settings.model === 'nai-diffusion-4-5-curated'
+        ? 'location, masterpiece, no text, -0.8::feet::, rating:general'
+        : 'location, very aesthetic, masterpiece, no text';
+}
+function addQualityTags(base, tags) {
+    if (!tags) return base;
+    // Text: must remain at the end; tags after it could be rendered as text.
+    const text = /^Text:/m.exec(base);
+    if (text) return `${[base.slice(0, text.index).trimEnd(), tags].filter(Boolean).join(', ')}\n\n${base.slice(text.index)}`;
+    return `${base}, ${tags}`;
+}
+
 export function isNovelAIMedium(model) {
     return model === NOVELAI_MEDIUM_MODEL;
 }
@@ -87,6 +125,8 @@ export function validateNovelAIParameters(settings) {
         }
     }
     if (!Object.hasOwn(NOVELAI_SAMPLERS, settings.novelaiSampler)) errors.push(t`Select a NovelAI sampler`);
+    if (!Object.hasOwn(NOVELAI_QUALITY_PRESETS, settings.novelaiQualityPreset || 'none')) errors.push('Unknown NovelAI quality preset');
+    if (!Object.hasOwn(NOVELAI_UC_PRESETS, settings.novelaiUcPreset || 'none')) errors.push('Unknown NovelAI UC preset');
     if (!settings.model?.startsWith('nai-diffusion-5-') && !NOVELAI_NOISE_SCHEDULES.includes(settings.novelaiNoiseSchedule)) errors.push(t`Select a noise schedule`);
     return errors;
 }
@@ -103,6 +143,8 @@ export function buildNovelAIParameters(settings, prompt, negativePrompt, model) 
     if (errors.length) throw new Error(errors.join('; '));
     const positive = splitNovelAICharacterPrompts(prompt);
     const negative = splitNovelAICharacterPrompts(medium ? NOVELAI_MEDIUM_NEGATIVE : negativePrompt);
+    positive.base = addQualityTags(positive.base, novelAIQualityTags(settings));
+    if (!medium) negative.base = [novelAIUndesiredTags(settings), negative.base].filter(Boolean).join(', ');
     const maxCharacters = model.startsWith('nai-diffusion-5-') ? 22 : 6;
     if (Math.max(positive.characters.length, negative.characters.length) > maxCharacters) {
         throw new Error(t`This NovelAI model supports up to ${maxCharacters} character prompts`);
@@ -125,16 +167,18 @@ export function buildNovelAIParameters(settings, prompt, negativePrompt, model) 
         seed: seed < 0 ? Math.floor(Math.random() * 4294967296) : seed,
         n_samples: 1,
         negative_prompt: negative.base,
-        // Medium uses its fixed UC preset; quality tags come from the prompt/style.
+        // Already expanded above; don't request a second automatic expansion.
         qualityToggle: false,
         ucPreset: medium ? 0 : 3,
         deliberate_euler_ancestral_bug: false,
         prefer_brownian: true,
         skip_cfg_above_sigma: Number(settings.novelaiSkipCfgAboveSigma) || null,
-        v4_prompt: { caption: caption(positive.base, positive.characters), use_coords: false, use_order: true },
+        v4_prompt: { caption: caption(positive.base, positive.characters), use_coords: false, use_order: true, legacy_uc: false },
         v4_negative_prompt: {
             caption: caption(negative.base, Array.from({ length: Math.max(positive.characters.length, negative.characters.length) }, (_, i) => negative.characters[i] || '')),
             legacy_uc: false,
+            use_coords: false,
+            use_order: false,
         },
     };
     // V5's web client fixes Karras; the UI does not offer a schedule picker.

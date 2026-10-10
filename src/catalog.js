@@ -1,7 +1,7 @@
 /** Native NovelAI libraries: names select entries; descriptions never depend on the LLM. */
 import { getSettings, getActiveStyle, getEffectiveNegativePrompt } from './settings.js';
 import { findPrimaryKeyMatch, promptMatchesAllSecondaryKeys, buildAdditionalReferencesPromptBlock } from './parser.js';
-import { buildNovelAIParameters, splitNovelAICharacterPrompts, isNovelAIMedium } from './novelai.js';
+import { buildNovelAIParameters, splitNovelAICharacterPrompts, isNovelAIMedium, novelAIQualityTags, novelAIUndesiredTags } from './novelai.js';
 
 export const id = () => `nni-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 9)}`;
 export const join = (...parts) => parts.map(x => String(x ?? '').trim()).filter(Boolean).join(', ');
@@ -114,6 +114,7 @@ export function buildNativeRequest(settings, instruction = {}) {
     const negative = [globalNegative, ...slots.map(s => s.negative)].join(' | ');
     const parameters = buildNovelAIParameters({ ...settings, novelaiAspectRatio: instruction.aspectRatio || settings.novelaiAspectRatio }, positive, negative, settings.model);
     parameters.v4_prompt.use_coords = slots.some(s => s.positionEnabled);
+    parameters.v4_negative_prompt.use_coords = parameters.v4_prompt.use_coords;
     parameters.v4_prompt.caption.char_captions.forEach((c, i) => c.centers = [slots[i].center]);
     parameters.v4_negative_prompt.caption.char_captions.forEach((c, i) => c.centers = [slots[i].center]);
     const referencePlans = [];
@@ -122,6 +123,7 @@ export function buildNativeRequest(settings, instruction = {}) {
     }
     if (style?.referenceEnabled && style?.imagePath) referencePlans.push({ ...style, label: style.name, kind: 'style' });
     const warnings = style?.selectionWarning ? [style.selectionWarning] : [];
+    if ((settings.novelaiQualityPreset || 'none') !== 'none' && /^Text:/m.test(basePrompt)) warnings.push('Quality Tags содержит no text: для надписей может помочь выбрать None.');
     if (!style?.value) warnings.push('Теги стиля не добавлены: активируй заполненный стиль в Библиотеке → Стили или укажи его имя в теге.');
     const activeReferences = [];
     const skippedReferences = [];
@@ -140,8 +142,18 @@ export function buildNativeRequest(settings, instruction = {}) {
     if (precise.length && vibes.length) throw new Error('Precise Reference и Vibe Transfer нельзя использовать вместе. Выбери один режим для фото.');
     if (precise.filter(r => r.kind === 'character').length > 1) warnings.push('NovelAI смешивает несколько фотореференсов персонажей; фото не привязаны к отдельным текстовым слотам.');
     if (vibes.length > 16) throw new Error('NovelAI поддерживает не более 16 Vibe-референсов в одном запросе.');
-    return { body: { action: 'generate', model: settings.model, input: basePrompt, parameters },
-        positive, negative, style, slots, activeReferences, skippedReferences, warnings };
+    const sentBase = parameters.v4_prompt.caption.base_caption;
+    const sentNegative = parameters.v4_negative_prompt.caption.base_caption;
+    const presets = {
+        qualityPreset: settings.novelaiQualityPreset || 'none',
+        ucPreset: isNovelAIMedium(settings.model) ? 'fixed-heavy' : settings.novelaiUcPreset || 'none',
+        negativeNsfw: !isNovelAIMedium(settings.model) && !!settings.novelaiNegativeNsfw,
+        qualityTags: novelAIQualityTags(settings), undesiredTags: novelAIUndesiredTags(settings),
+    };
+    return { body: { action: 'generate', model: settings.model, input: sentBase, parameters },
+        positive: [sentBase, ...slots.map(s => s.description)].join(' | '),
+        negative: [sentNegative, ...slots.map(s => s.negative)].join(' | '),
+        presets, style, slots, activeReferences, skippedReferences, warnings };
 }
 export function catalogInstructions(settings = getSettings()) {
     const names = (settings.novelCharacters || []).filter(c => c.enabled !== false && c.name).map(c => c.name);

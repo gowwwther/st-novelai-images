@@ -4,6 +4,7 @@ import { NOVELAI_MODELS, validateNovelAIParameters } from './novelai.js';
 import { ProviderError, fetchWithTimeout } from './utils.js';
 import { buildNativeRequest } from './catalog.js';
 import { attachNativeReferences, decodeImageResponse } from './referenceApi.js';
+import { buildPNGRequest } from './pngMetadata.js';
 const endpoint = 'https://image.novelai.net';
 export function validateSettings() {
     const s = getSettings();
@@ -24,7 +25,10 @@ const provider = {
         const settings = structuredClone(getSettings()); // One immutable request config across UI changes/retries.
         settings.apiType = 'novelai'; settings.apiKey = settings.apiKey.trim().replace(/^Bearer\s+/i, '');
         let request;
-        try { request = buildNativeRequest(settings, { prompt, style, ...options }); }
+        try {
+            if (!settings.apiKey) throw new Error('Вставь Persistent API Token NovelAI.');
+            request = options.importedPNG ? buildPNGRequest(settings, options.importedPNG) : buildNativeRequest(settings, { prompt, style, ...options });
+        }
         catch (e) {
             setLastRequestSnapshot({ timestamp: Date.now(), status: 'blocked', error: e.message, prompt, metadata: { model: settings.model, apiType: 'novelai' }, warnings: [e.message] });
             throw new ProviderError({ message: e.message, code: 'invalid_request', providerId: 'novelai' });
@@ -32,7 +36,7 @@ const provider = {
         const snapshot = { timestamp: Date.now(), status: 'preparing', prompt: request.positive, negativePrompt: request.negative,
             characters: request.slots.map(s => ({ name: s.name, description: s.description, negative: s.negative, center: s.center, reason: s.reason })),
             references: [], skippedReferences: request.skippedReferences, warnings: request.warnings,
-            metadata: { provider: 'NovelAI', apiType: 'novelai', model: settings.model, style: request.style?.name || '', styleId: request.style?.id || '', stylePrompt: request.style?.value || '', styleSelection: request.style?.selectionSource || 'none', size: `${request.body.parameters.width}x${request.body.parameters.height}`, seed: request.body.parameters.seed },
+            metadata: { provider: 'NovelAI', apiType: 'novelai', model: settings.model, ...request.presets, style: request.style?.name || '', styleId: request.style?.id || '', stylePrompt: request.style?.value || '', styleSelection: request.style?.selectionSource || 'none', size: `${request.body.parameters.width}x${request.body.parameters.height}`, seed: request.body.parameters.seed },
             url: `${endpoint}/ai/generate-image`, body: request.body };
         setLastRequestSnapshot(snapshot);
         for (const warning of request.warnings) { nniLog('WARN', warning); globalThis.toastr?.warning(warning, 'NovelAI'); }
